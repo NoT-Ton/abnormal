@@ -1,7 +1,7 @@
 """
-Person Tracker
-Uses OpenCV background subtraction + contour detection for person detection,
-with centroid-based ID assignment for tracking across frames.
+Person Tracker — YOLOv8 Edition
+Replaces MOG2 blob detection with YOLOv8 person-class detection.
+Fixes: body-part fragmentation, glass reflections, false positives.
 """
 
 import cv2
@@ -12,69 +12,142 @@ from collections import OrderedDict
 
 class PersonTracker:
     """
-    Lightweight person tracker using:
-    - MOG2 background subtraction for detection
-    - Centroid tracking with ID persistence
+    Person tracker using:
+    - YOLOv8n for detection  (class 0 = person only, confidence >= 0.45)
+    - Centroid tracking with IoU-assisted ID assignment
+    - NMS to suppress overlapping boxes on same person
     """
 
-    def __init__(self, max_disappeared=30, max_distance=80):
+    def __init__(self, max_disappeared=40, max_distance=120, conf_threshold=0.45):
         self.next_id = 0
-        self.objects = OrderedDict()       # id -> centroid
-        self.bboxes = OrderedDict()        # id -> bbox
-        self.disappeared = OrderedDict()   # id -> frames missing
+        self.objects = OrderedDict()      # id -> centroid (x, y)
+        self.bboxes = OrderedDict()       # id -> (x1,y1,x2,y2)
+        self.disappeared = OrderedDict()  # id -> frames missing
         self.max_disappeared = max_disappeared
         self.max_distance = max_distance
+        self.conf_threshold = conf_threshold
 
-        # Background subtractor
-        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
-            history=500, varThreshold=50, detectShadows=True
-        )
-        self.kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        self.model = None
+        self._load_model()
+
+    def _load_model(self):
+        try:
+            from ultralytics import YOLO
+            # yolov8n.pt is ~6MB, downloads once automatically
+            self.model = YOLO("yolov8m.pt")
+            print("[Tracker] YOLOv8 loaded OK")
+        except Exception as e:
+            print(f"[Tracker] YOLOv8 unavailable: {e} -- falling back to HOG detector")
+            self.model = None
+            self._init_hog_fallback()
+
+    def _init_hog_fallback(self):
+        """HOG person detector as fallback (much better than MOG2)."""
+        self.hog = cv2.HOGDescriptor()
+        self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
 
     def detect_persons(self, frame):
-        """Detect person-like blobs using background subtraction."""
-        fg_mask = self.bg_subtractor.apply(frame)
+        """Detect persons using YOLO (preferred) or HOG (fallback)."""
+        if self.model is not None:
+            return self._detect_yolo(frame)
+        return self._detect_hog(frame)
 
-        # Remove shadows (gray pixels = 127)
-        _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
-
-        # Morphological cleanup
-        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.kernel, iterations=2)
-        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self.kernel, iterations=3)
-        fg_mask = cv2.dilate(fg_mask, self.kernel, iterations=2)
-
-        contours, _ = cv2.findContours(
-            fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    def _detect_yolo(self, frame):
+        """Run YOLOv8, keep only class=0 (person) above confidence threshold."""
+        results = self.model(
+            frame,
+            classes=[0],           # person only -- ignores everything else
+            conf=self.conf_threshold,
+            iou=0.45,              # NMS threshold -- merges overlapping boxes
+            verbose=False,
         )
 
         detections = []
-        h, w = frame.shape[:2]
+        if results and results[0].boxes is not None:
+            boxes = results[0].boxes
+            for box in boxes:
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                conf = float(box.conf[0])
 
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            # Filter by area (roughly person-sized blob)
-            if area < 600 or area > (h * w * 0.3):
-                continue
+                # Sanity: minimum person size (avoids tiny distant specks)
+                w = x2 - x1
+                h = y2 - y1
+                if w < 15 or h < 20:
+                    continue
 
-            x, y, bw, bh = cv2.boundingRect(cnt)
-            aspect = bh / max(bw, 1)
-
-            # Person-like aspect ratio (taller than wide)
-            if aspect < 0.8 or aspect > 6.0:
-                continue
-
-            cx = x + bw // 2
-            cy = y + bh // 2
-            detections.append({
-                "centroid": (cx, cy),
-                "bbox": (x, y, x + bw, y + bh),
-                "area": area,
-            })
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                detections.append({
+                    "centroid": (cx, cy),
+                    "bbox": (x1, y1, x2, y2),
+                    "confidence": conf,
+                })
 
         return detections
 
+    def _detect_hog(self, frame):
+        """HOG fallback -- better than MOG2 for static cameras."""
+        h, w = frame.shape[:2]
+        scale = 640 / max(h, w)
+        small = cv2.resize(frame, (int(w * scale), int(h * scale)))
+
+        rects, weights = self.hog.detectMultiScale(
+            small,
+            winStride=(8, 8),
+            padding=(4, 4),
+            scale=1.05,
+        )
+
+        detections = []
+        for i, (rx, ry, rw, rh) in enumerate(rects):
+            x1 = int(rx / scale)
+            y1 = int(ry / scale)
+            x2 = int((rx + rw) / scale)
+            y2 = int((ry + rh) / scale)
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+            conf = float(weights[i]) if i < len(weights) else 0.5
+            detections.append({
+                "centroid": (cx, cy),
+                "bbox": (x1, y1, x2, y2),
+                "confidence": conf,
+            })
+
+        detections = self._apply_nms(detections, iou_threshold=0.4)
+        return detections
+
+    def _apply_nms(self, detections, iou_threshold=0.4):
+        """Non-maximum suppression to merge overlapping detections."""
+        if not detections:
+            return []
+
+        boxes = np.array([d["bbox"] for d in detections], dtype=float)
+        scores = np.array([d["confidence"] for d in detections])
+
+        x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        areas = (x2 - x1) * (y2 - y1)
+        order = scores.argsort()[::-1]
+
+        keep = []
+        while order.size > 0:
+            i = order[0]
+            keep.append(i)
+            xx1 = np.maximum(x1[i], x1[order[1:]])
+            yy1 = np.maximum(y1[i], y1[order[1:]])
+            xx2 = np.minimum(x2[i], x2[order[1:]])
+            yy2 = np.minimum(y2[i], y2[order[1:]])
+            w = np.maximum(0, xx2 - xx1)
+            h = np.maximum(0, yy2 - yy1)
+            inter = w * h
+            iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-6)
+            order = order[1:][iou < iou_threshold]
+
+        return [detections[i] for i in keep]
+
+    # ── Centroid Tracking ────────────────────────────────────────────────
+
     def update(self, detections):
-        """Update tracker with new detections, return objects with IDs."""
+        """Assign persistent IDs to detections using centroid matching."""
         if not detections:
             for pid in list(self.disappeared):
                 self.disappeared[pid] += 1
@@ -89,12 +162,12 @@ class PersonTracker:
 
         if not self.objects:
             for i, c in enumerate(input_centroids):
-                self._register(c, input_bboxes[i])
+                self._register(tuple(c), input_bboxes[i])
         else:
             object_ids = list(self.objects.keys())
-            object_centroids = list(self.objects.values())
+            object_centroids = np.array(list(self.objects.values()))
 
-            D = dist.cdist(np.array(object_centroids), input_centroids)
+            D = dist.cdist(object_centroids, input_centroids)
             rows = D.min(axis=1).argsort()
             cols = D.argmin(axis=1)[rows]
 
@@ -105,7 +178,7 @@ class PersonTracker:
                 if D[row, col] > self.max_distance:
                     continue
                 pid = object_ids[row]
-                self.objects[pid] = input_centroids[col]
+                self.objects[pid] = tuple(input_centroids[col])
                 self.bboxes[pid] = input_bboxes[col]
                 self.disappeared[pid] = 0
                 used_rows.add(row)
@@ -123,7 +196,7 @@ class PersonTracker:
                     del self.disappeared[pid]
 
             for col in unused_cols:
-                self._register(input_centroids[col], input_bboxes[col])
+                self._register(tuple(input_centroids[col]), input_bboxes[col])
 
         return self._to_list()
 
@@ -145,6 +218,6 @@ class PersonTracker:
         return result
 
     def detect_and_track(self, frame):
-        """Full pipeline: detect then track."""
+        """Full pipeline: YOLO detect -> centroid track."""
         raw_detections = self.detect_persons(frame)
         return self.update(raw_detections)

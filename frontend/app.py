@@ -255,7 +255,7 @@ def format_report(report: dict) -> str:
     return "\n".join(lines)
 
 
-def run_analysis(video_file, loitering_threshold, speed_threshold, progress=gr.Progress()):
+def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshold, progress=gr.Progress()):
     """Main analysis function called by Gradio."""
     if video_file is None:
         raise gr.Error("Please upload a video file first.")
@@ -269,6 +269,7 @@ def run_analysis(video_file, loitering_threshold, speed_threshold, progress=gr.P
         "panic_spread_threshold": 0.5,
         "frame_skip": 2,
         "max_persons": 50,
+        "yolo_conf_threshold": float(conf_threshold),
     }
 
     analyzer = AbnormalBehaviorAnalyzer(config=config)
@@ -355,6 +356,16 @@ with gr.Blocks(title="ABDS — Abnormal Behavior Detection") as demo:
                     info="Movement speed to classify as running",
                 )
 
+            with gr.Row():
+                conf_slider = gr.Slider(
+                    minimum=0.25,
+                    maximum=0.85,
+                    value=0.45,
+                    step=0.05,
+                    label="YOLO Detection Confidence",
+                    info="Higher = fewer but more certain detections (raise if too many false boxes)",
+                )
+
             analyze_btn = gr.Button(
                 "◉  INITIATE ANALYSIS",
                 variant="primary",
@@ -415,7 +426,7 @@ with gr.Blocks(title="ABDS — Abnormal Behavior Detection") as demo:
     # Wire up
     analyze_btn.click(
         fn=run_analysis,
-        inputs=[video_input, loitering_slider, speed_slider],
+        inputs=[video_input, loitering_slider, speed_slider, conf_slider],
         outputs=[severity_out, loitering_out, panic_out, crowd_out, report_out, video_output],
     )
 
