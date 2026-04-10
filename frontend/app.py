@@ -143,19 +143,19 @@ button.primary:hover {
 video { border: 1px solid var(--border) !important; border-radius: 2px !important; }
 
 /* Scan line overlay effect */
-.scan-overlay {
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        rgba(0,0,0,0.03) 2px,
-        rgba(0,0,0,0.03) 4px
-    );
-    pointer-events: none;
-    z-index: 9999;
-}
+# .scan-overlay {
+#     position: fixed;
+#     top: 0; left: 0; right: 0; bottom: 0;
+#     background: repeating-linear-gradient(
+#         0deg,
+#         transparent,
+#         transparent 2px,
+#         rgba(0,0,0,0.03) 2px,
+#         rgba(0,0,0,0.03) 4px
+#     );
+#     pointer-events: none;
+#     z-index: 9999;
+# }
 
 /* Status indicator */
 .status-dot {
@@ -423,7 +423,7 @@ with gr.Blocks(title="ABDS — Abnormal Behavior Detection") as demo:
 
             # Final annotated video — hidden until processing done
             video_output = gr.Video(
-                label="▶ Annotated Output — playable & downloadable",
+                label="▶ Annotated Output — downloadable",
                 show_label=True,
                 interactive=False,
                 height=360,
