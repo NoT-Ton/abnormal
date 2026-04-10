@@ -76,7 +76,7 @@ class PanicDetector:
                     directional_panic = dir_variance < 0.8  # Low variance = same direction
 
             if run_ratio >= self.spread_threshold:
-                if timestamp - self.last_panic_alert > 10:  # 10s cooldown
+                if timestamp - self.last_panic_alert > 1:   # 3s cooldown — capture every distinct event
                     self.last_panic_alert = timestamp
                     confidence = min(run_ratio + (0.2 if directional_panic else 0), 1.0)
                     events.append({
@@ -126,7 +126,7 @@ class PanicDetector:
         drop_ratio = (avg_past - avg_recent) / avg_past
 
         if drop_ratio > 0.6:  # 60% crowd drop
-            if timestamp - self.last_panic_alert > 15:
+            if timestamp - self.last_panic_alert > 1:
                 self.last_panic_alert = timestamp
                 return {
                     "type": "panic",

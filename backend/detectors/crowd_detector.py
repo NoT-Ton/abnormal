@@ -37,7 +37,7 @@ class CrowdDetector:
         recent_avg = np.mean(counts[-5:])
         spike_ratio = recent_avg / self.baseline_count
 
-        if spike_ratio > 2.5 and (timestamp - self.last_alert_time) > 20:
+        if spike_ratio > 2.5 and (timestamp - self.last_alert_time) > 8:
             self.last_alert_time = timestamp
             events.append({
                 "type": "crowd_anomaly",
