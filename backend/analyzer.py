@@ -39,7 +39,7 @@ class AbnormalBehaviorAnalyzer:
         )
         self.crowd_detector = CrowdDetector()
         self.person_trails: dict = {}
-        self.TRAIL_LEN = 40
+        self.TRAIL_LEN = 30
 
     def _default_config(self) -> dict:
         return {
@@ -198,8 +198,11 @@ class AbnormalBehaviorAnalyzer:
         alert_pids_panic  = {ev.get("person_id") for ev in events if ev["type"] == "panic"}
         has_panic = bool([e for e in events if e["type"] == "panic"])
 
-        # ── Draw motion trails ──
+        # ── Draw motion trails — only for currently active persons ──
+        active_pids = {det['id'] for det in detections}
         for pid, trail in self.person_trails.items():
+            if pid not in active_pids:
+                continue
             if len(trail) < 2:
                 continue
             pts = list(trail)
@@ -247,6 +250,12 @@ class AbnormalBehaviorAnalyzer:
             trail.append((int(cx), int(cy)))
             if len(trail) > self.TRAIL_LEN:
                 trail.pop(0)
+
+        # ── Clean up trails for gone persons ──
+        tracked_pids = {det['id'] for det in detections}
+        for gone_pid in list(self.person_trails.keys()):
+            if gone_pid not in tracked_pids:
+                del self.person_trails[gone_pid]
 
         # ── HUD: top bar ──
         ts_str = f"{int(timestamp // 60):02d}:{int(timestamp % 60):02d}"

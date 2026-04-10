@@ -18,7 +18,7 @@ class PersonTracker:
     - NMS to suppress overlapping boxes on same person
     """
 
-    def __init__(self, max_disappeared=40, max_distance=120, conf_threshold=0.45):
+    def __init__(self, max_disappeared=8, max_distance=120, conf_threshold=0.45):
         self.next_id = 0
         self.objects = OrderedDict()      # id -> centroid (x, y)
         self.bboxes = OrderedDict()       # id -> (x1,y1,x2,y2)
@@ -35,7 +35,8 @@ class PersonTracker:
             from ultralytics import YOLO
             # yolov8n.pt is ~6MB, downloads once automatically
             self.model = YOLO("yolov8m.pt")
-            print("[Tracker] YOLOv8 loaded OK")
+            self.model.to("cpu")  # force CPU inference
+            print("[Tracker] YOLOv8n loaded OK (CPU mode)")
         except Exception as e:
             print(f"[Tracker] YOLOv8 unavailable: {e} -- falling back to HOG detector")
             self.model = None
@@ -59,6 +60,7 @@ class PersonTracker:
             classes=[0],           # person only -- ignores everything else
             conf=self.conf_threshold,
             iou=0.45,              # NMS threshold -- merges overlapping boxes
+            device="cpu",          # explicit CPU — no GPU required
             verbose=False,
         )
 
