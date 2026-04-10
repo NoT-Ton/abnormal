@@ -255,12 +255,15 @@ def format_report(report: dict) -> str:
     return "\n".join(lines)
 
 
-def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshold, progress=gr.Progress()):
-    """Main analysis function called by Gradio."""
+def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshold):
+    """
+    Streaming generator.
+    Outputs order matches .click() outputs list:
+      live_frame (Image), video_output (Video),
+      severity, loitering, panic, crowd, report
+    """
     if video_file is None:
         raise gr.Error("Please upload a video file first.")
-
-    progress(0, desc="Initializing analyzer...")
 
     config = {
         "loitering_threshold_seconds": int(loitering_threshold),
@@ -274,41 +277,55 @@ def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshol
 
     analyzer = AbnormalBehaviorAnalyzer(config=config)
 
-    # Output video path
-    output_video = tempfile.mktemp(suffix="_annotated.mp4")
+    # Use a dedicated output dir to avoid Windows file-lock issues on Gradio's temp dir.
+    # tempfile.mktemp can conflict on Windows — use a named temp file in our own folder.
+    out_dir = os.path.join(tempfile.gettempdir(), "abds_output")
+    os.makedirs(out_dir, exist_ok=True)
+    output_video = os.path.join(out_dir, f"annotated_{os.getpid()}.mp4")
 
-    def on_progress(pct, msg):
-        progress(pct, desc=msg)
+    # Copy input away from Gradio's locked temp path (Windows PermissionError fix)
+    input_copy = os.path.join(out_dir, f"input_{os.getpid()}.mp4")
+    shutil.copy2(video_file, input_copy)
 
-    report = analyzer.analyze_video(
-        video_path=video_file,
-        output_path=output_video,
-        progress_callback=on_progress,
-    )
+    for result in analyzer.analyze_video_streaming(input_copy, output_video):
+        frame_rgb, pct, payload = result
 
-    report_text = format_report(report)
-    severity = report.get("severity", "NORMAL")
-    
-    summary = report.get("summary", {})
-    loitering_count = summary.get("loitering_incidents", 0)
-    panic_count = summary.get("panic_incidents", 0)
-    crowd_count = summary.get("crowd_anomalies", 0)
-    
-    severity_display = f"🔴 {severity}" if severity == "CRITICAL" else \
-                       f"🟠 {severity}" if severity == "WARNING" else \
-                       f"🟢 {severity}"
+        if frame_rgb is not None:
+            # ── Still processing: show live frame, hide final video ──
+            yield (
+                gr.update(value=frame_rgb, visible=True),   # live_frame
+                gr.update(visible=False),                    # video_output hidden
+                "",                                          # severity
+                "",                                          # loitering
+                "",                                          # panic
+                "",                                          # crowd
+                f"⏳ Analyzing... {int(pct*100)}%",          # report placeholder
+            )
+        else:
+            # ── Done: hide live frame, show final video + results ──
+            report = payload
+            report_text = format_report(report)
+            severity = report.get("severity", "NORMAL")
+            summary = report.get("summary", {})
 
-    output_exists = os.path.exists(output_video) and os.path.getsize(output_video) > 0
-    video_out = output_video if output_exists else None
+            severity_display = (
+                f"🔴 {severity}" if severity == "CRITICAL" else
+                f"🟠 {severity}" if severity == "WARNING" else
+                f"🟢 {severity}"
+            )
 
-    return (
-        severity_display,
-        str(loitering_count),
-        str(panic_count),
-        str(crowd_count),
-        report_text,
-        video_out,
-    )
+            output_exists = os.path.exists(output_video) and os.path.getsize(output_video) > 0
+            video_out = output_video if output_exists else None
+
+            yield (
+                gr.update(value=None, visible=False),        # hide live_frame
+                gr.update(value=video_out, visible=True),    # show video_output
+                severity_display,
+                str(summary.get("loitering_incidents", 0)),
+                str(summary.get("panic_incidents", 0)),
+                str(summary.get("crowd_anomalies", 0)),
+                report_text,
+            )
 
 
 # ──────────────────────────────────────────────
@@ -383,8 +400,31 @@ with gr.Blocks(title="ABDS — Abnormal Behavior Detection") as demo:
 
         # ── RIGHT COLUMN: Results ──
         with gr.Column(scale=2):
-            gr.HTML('<div class="section-label">▸ Threat Assessment</div>')
 
+            gr.HTML('''
+            <div class="section-label">▸ Annotated Output Feed</div>
+            ''')
+
+            # ── ROW 1: Live tracking preview (shown while processing) ──
+            live_frame = gr.Image(
+                label="",
+                show_label=False,
+                interactive=False,
+                height=360,
+                elem_id="live-feed",
+                visible=True,
+            )
+
+            # Final annotated video (shown after processing completes)
+            video_output = gr.Video(
+                label="",
+                show_label=False,
+                interactive=False,
+                height=360,
+                visible=False,
+            )
+
+            gr.HTML('<div class="section-label" style="margin-top:1rem">▸ Threat Assessment</div>')
             with gr.Row():
                 severity_out = gr.Textbox(
                     label="THREAT LEVEL",
@@ -407,27 +447,21 @@ with gr.Blocks(title="ABDS — Abnormal Behavior Detection") as demo:
                     elem_classes=["metric-card"],
                 )
 
-            gr.HTML('<div class="section-label" style="margin-top:1.2rem">▸ Analysis Report</div>')
+            gr.HTML('<div class="section-label" style="margin-top:1rem">▸ Analysis Report</div>')
             report_out = gr.Textbox(
                 label="",
-                lines=18,
-                max_lines=30,
+                lines=12,
+                max_lines=20,
                 interactive=False,
                 elem_id="report-output",
                 placeholder="Report will appear here after analysis...",
-            )
-
-            gr.HTML('<div class="section-label" style="margin-top:1.2rem">▸ Annotated Output Feed</div>')
-            video_output = gr.Video(
-                label="Processed Video with Annotations",
-                interactive=False,
             )
 
     # Wire up
     analyze_btn.click(
         fn=run_analysis,
         inputs=[video_input, loitering_slider, speed_slider, conf_slider],
-        outputs=[severity_out, loitering_out, panic_out, crowd_out, report_out, video_output],
+        outputs=[live_frame, video_output, severity_out, loitering_out, panic_out, crowd_out, report_out],
     )
 
     gr.HTML("""
