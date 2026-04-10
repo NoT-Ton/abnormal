@@ -39,7 +39,7 @@ class AbnormalBehaviorAnalyzer:
         )
         self.crowd_detector = CrowdDetector()
         self.person_trails: dict = {}
-        self.TRAIL_LEN = 30
+        self.TRAIL_LEN = 20
 
     def _default_config(self) -> dict:
         return {
@@ -173,11 +173,13 @@ class AbnormalBehaviorAnalyzer:
             annotated = self._annotate_frame(frame, detections, all_frame_events, timestamp)
             writer.write_frame(annotated)
 
-            # Yield live preview frame
+            # Yield live preview frame + any new events detected this batch
             if frame_idx % preview_every == 0:
                 pct = min(frame_idx / max(total_frames, 1), 0.99)
                 rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                yield rgb, pct, f"Processing frame {frame_idx}/{total_frames}..."
+                # Dedup events accumulated so far for live display
+                live_report = self._build_report(events, frame_idx / fps, fps, frame_idx)
+                yield rgb, pct, live_report
 
         cap.release()
         writer.release()

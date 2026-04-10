@@ -196,6 +196,54 @@ label { color: var(--muted) !important; font-family: var(--mono) !important; fon
 # Analysis function
 # ──────────────────────────────────────────────
 
+def format_live_report(report: dict, pct: float) -> str:
+    """Compact real-time alert feed shown while processing."""
+    events = report.get("events", {})
+    loitering = events.get("loitering", [])
+    panic      = events.get("panic", [])
+    crowd      = events.get("crowd_anomaly", [])
+
+    lines = []
+    lines.append(f"⏳  ANALYZING...  {int(pct*100)}%")
+    lines.append("─" * 56)
+
+    if not loitering and not panic and not crowd:
+        lines.append("  No abnormal events detected yet...")
+        return "\n".join(lines)
+
+    if panic:
+        lines.append("🚨 PANIC / RUNNING EVENTS")
+        for i, ev in enumerate(panic, 1):
+            ts = ev.get("timestamp", 0)
+            mm, ss = int(ts // 60), int(ts % 60)
+            conf = int(ev.get("confidence", 0) * 100)
+            lines.append(f"  [{i}] @ {mm:02d}:{ss:02d}  |  Confidence: {conf}%")
+            lines.append(f"      {ev.get('description', '')}")
+            lines.append("")
+
+    if loitering:
+        lines.append("⚠  LOITERING EVENTS")
+        for i, ev in enumerate(loitering, 1):
+            ts = ev.get("timestamp", 0)
+            mm, ss = int(ts // 60), int(ts % 60)
+            conf = int(ev.get("confidence", 0) * 100)
+            dur  = ev.get("duration_seconds", 0)
+            lines.append(f"  [{i}] @ {mm:02d}:{ss:02d}  |  Person #{ev.get('person_id','?')}  |  {dur:.0f}s  |  Conf: {conf}%")
+            lines.append(f"      {ev.get('description', '')}")
+            lines.append("")
+
+    if crowd:
+        lines.append("⚠  CROWD ANOMALIES")
+        for i, ev in enumerate(crowd, 1):
+            ts = ev.get("timestamp", 0)
+            mm, ss = int(ts // 60), int(ts % 60)
+            lines.append(f"  [{i}] @ {mm:02d}:{ss:02d}")
+            lines.append(f"      {ev.get('description', '')}")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
 def format_report(report: dict) -> str:
     """Convert report dict to readable text."""
     lines = []
@@ -296,15 +344,19 @@ def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshol
         frame_rgb, pct, payload = result
 
         if frame_rgb is not None:
-            # ── Still processing: show live frame ──
+            # ── Still processing: show live frame + live event feed ──
+            live_report = payload  # now a report dict from analyzer
+            summary = live_report.get("summary", {})
+            live_text = format_live_report(live_report, pct)
+
             yield (
-                gr.update(value=frame_rgb, visible=True),    # live_frame: show
-                gr.update(value=None),                        # video_output: clear while processing
-                "",                                           # severity
-                "",                                           # loitering
-                "",                                           # panic
-                "",                                           # crowd
-                f"⏳ Analyzing... {int(pct*100)}%",           # report placeholder
+                gr.update(value=frame_rgb, visible=True),                    # live_frame
+                gr.update(value=None),                                        # video_output hidden
+                f"🟡 ANALYZING {int(pct*100)}%",                             # severity
+                str(summary.get("loitering_incidents", 0)),                  # loitering count
+                str(summary.get("panic_incidents", 0)),                      # panic count
+                str(summary.get("crowd_anomalies", 0)),                      # crowd count
+                live_text,                                                    # live alert feed
             )
         else:
             # ── Done: hide live frame, load final video ──
