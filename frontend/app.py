@@ -16,6 +16,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from analyzer import AbnormalBehaviorAnalyzer
 
+# ── Windows-safe temp directory for all file I/O ──────────────────────────────
+# Gradio 6 on Windows gets PermissionError when it tries to serve files from
+# its own AppData temp folder while another process has them open.
+# We redirect everything to a controlled folder and pass it to allowed_paths.
+ABDS_TMP = os.path.join(os.path.expanduser("~"), "abds_tmp")
+os.makedirs(ABDS_TMP, exist_ok=True)
+
 # ──────────────────────────────────────────────
 # CSS — Dark surveillance aesthetic
 # ──────────────────────────────────────────────
@@ -143,19 +150,19 @@ button.primary:hover {
 video { border: 1px solid var(--border) !important; border-radius: 2px !important; }
 
 /* Scan line overlay effect */
-# .scan-overlay {
-#     position: fixed;
-#     top: 0; left: 0; right: 0; bottom: 0;
-#     background: repeating-linear-gradient(
-#         0deg,
-#         transparent,
-#         transparent 2px,
-#         rgba(0,0,0,0.03) 2px,
-#         rgba(0,0,0,0.03) 4px
-#     );
-#     pointer-events: none;
-#     z-index: 9999;
-# }
+.scan-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.03) 2px,
+        rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+}
 
 /* Status indicator */
 .status-dot {
@@ -277,14 +284,12 @@ def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshol
 
     analyzer = AbnormalBehaviorAnalyzer(config=config)
 
-    # Use a dedicated output dir to avoid Windows file-lock issues on Gradio's temp dir.
-    # tempfile.mktemp can conflict on Windows — use a named temp file in our own folder.
-    out_dir = os.path.join(tempfile.gettempdir(), "abds_output")
-    os.makedirs(out_dir, exist_ok=True)
-    output_video = os.path.join(out_dir, f"annotated_{os.getpid()}.mp4")
+    import uuid
+    run_id = uuid.uuid4().hex[:8]
+    output_video = os.path.join(ABDS_TMP, f"annotated_{run_id}.mp4")
 
     # Copy input away from Gradio's locked temp path (Windows PermissionError fix)
-    input_copy = os.path.join(out_dir, f"input_{os.getpid()}.mp4")
+    input_copy = os.path.join(ABDS_TMP, f"input_{run_id}.mp4")
     shutil.copy2(video_file, input_copy)
 
     for result in analyzer.analyze_video_streaming(input_copy, output_video):
@@ -314,14 +319,13 @@ def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshol
                 f"🟢 {severity}"
             )
 
-            # Copy the output video into a stable location Gradio can serve
+            # Use the H.264-encoded path from the analyzer (browser-compatible)
+            raw_path = report.get("_output_video_path") or output_video
             final_video = None
-            if os.path.exists(output_video) and os.path.getsize(output_video) > 0:
-                import uuid
-                serve_dir = os.path.join(tempfile.gettempdir(), "abds_serve")
-                os.makedirs(serve_dir, exist_ok=True)
-                final_video = os.path.join(serve_dir, f"result_{uuid.uuid4().hex}.mp4")
-                shutil.copy2(output_video, final_video)
+            if raw_path and os.path.exists(raw_path) and os.path.getsize(raw_path) > 0:
+                # Copy into ABDS_TMP so Gradio's allowed_paths can serve it
+                final_video = os.path.join(ABDS_TMP, f"result_{run_id}.mp4")
+                shutil.copy2(raw_path, final_video)
 
             yield (
                 gr.update(value=None, visible=False),         # live_frame: hide
@@ -355,6 +359,7 @@ with gr.Blocks(title="ABDS — Abnormal Behavior Detection") as demo:
             video_input = gr.Video(
                 label="Upload Surveillance Video",
                 elem_classes=["upload-zone"],
+                sources=["upload"],
             )
 
             gr.HTML('<div class="section-label" style="margin-top:1.2rem">▸ Detection Parameters</div>')
@@ -423,7 +428,7 @@ with gr.Blocks(title="ABDS — Abnormal Behavior Detection") as demo:
 
             # Final annotated video — hidden until processing done
             video_output = gr.Video(
-                label="▶ Annotated Output — downloadable",
+                label="▶ Annotated Output — playable & downloadable",
                 show_label=True,
                 interactive=False,
                 height=360,
@@ -485,4 +490,5 @@ if __name__ == "__main__":
         server_port=7860,
         share=False,
         css=CUSTOM_CSS,
+        allowed_paths=[ABDS_TMP],   # let Gradio serve files from our controlled folder
     )

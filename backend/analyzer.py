@@ -182,7 +182,11 @@ class AbnormalBehaviorAnalyzer:
         cap.release()
         writer.release()
 
+        # Re-encode to H.264 for browser playback (replaces mp4v if needed)
+        browser_path = writer.get_browser_compatible_path()
+
         report = self._build_report(events, duration_sec, fps, total_frames)
+        report["_output_video_path"] = browser_path
         yield None, 1.0, report
 
     def _annotate_frame(self, frame, detections, events, timestamp):
