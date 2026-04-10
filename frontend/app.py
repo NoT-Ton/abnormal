@@ -20,7 +20,8 @@ from analyzer import AbnormalBehaviorAnalyzer
 # Gradio 6 on Windows gets PermissionError when it tries to serve files from
 # its own AppData temp folder while another process has them open.
 # We redirect everything to a controlled folder and pass it to allowed_paths.
-ABDS_TMP = os.path.join(os.path.expanduser("~"), "abds_tmp")
+# Respect ABDS_TMP env var (set in Docker) or fall back to ~/abds_tmp on Windows
+ABDS_TMP = os.environ.get("ABDS_TMP", os.path.join(os.path.expanduser("~"), "abds_tmp"))
 os.makedirs(ABDS_TMP, exist_ok=True)
 
 # ──────────────────────────────────────────────

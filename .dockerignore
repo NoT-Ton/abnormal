@@ -1,0 +1,29 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.env/
+env/
+
+# Dev / IDE
+.vscode/
+.idea/
+*.egg-info/
+
+# Local temp output folders
+abds_tmp/
+abds_serve/
+
+# Git
+.git/
+.gitignore
+
+# Docs / extras (not needed at runtime)
+README.md
+*.png
+*.jpg
