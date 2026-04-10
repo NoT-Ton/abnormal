@@ -291,18 +291,18 @@ def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshol
         frame_rgb, pct, payload = result
 
         if frame_rgb is not None:
-            # ── Still processing: show live frame, hide final video ──
+            # ── Still processing: show live frame ──
             yield (
-                gr.update(value=frame_rgb, visible=True),   # live_frame
-                gr.update(visible=False),                    # video_output hidden
-                "",                                          # severity
-                "",                                          # loitering
-                "",                                          # panic
-                "",                                          # crowd
-                f"⏳ Analyzing... {int(pct*100)}%",          # report placeholder
+                gr.update(value=frame_rgb, visible=True),    # live_frame: show
+                gr.update(value=None),                        # video_output: clear while processing
+                "",                                           # severity
+                "",                                           # loitering
+                "",                                           # panic
+                "",                                           # crowd
+                f"⏳ Analyzing... {int(pct*100)}%",           # report placeholder
             )
         else:
-            # ── Done: hide live frame, show final video + results ──
+            # ── Done: hide live frame, load final video ──
             report = payload
             report_text = format_report(report)
             severity = report.get("severity", "NORMAL")
@@ -314,12 +314,18 @@ def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshol
                 f"🟢 {severity}"
             )
 
-            output_exists = os.path.exists(output_video) and os.path.getsize(output_video) > 0
-            video_out = output_video if output_exists else None
+            # Copy the output video into a stable location Gradio can serve
+            final_video = None
+            if os.path.exists(output_video) and os.path.getsize(output_video) > 0:
+                import uuid
+                serve_dir = os.path.join(tempfile.gettempdir(), "abds_serve")
+                os.makedirs(serve_dir, exist_ok=True)
+                final_video = os.path.join(serve_dir, f"result_{uuid.uuid4().hex}.mp4")
+                shutil.copy2(output_video, final_video)
 
             yield (
-                gr.update(value=None, visible=False),        # hide live_frame
-                gr.update(value=video_out, visible=True),    # show video_output
+                gr.update(value=None, visible=False),         # live_frame: hide
+                gr.update(value=final_video, visible=True),   # video_output: show with stable path
                 severity_display,
                 str(summary.get("loitering_incidents", 0)),
                 str(summary.get("panic_incidents", 0)),
@@ -405,23 +411,25 @@ with gr.Blocks(title="ABDS — Abnormal Behavior Detection") as demo:
             <div class="section-label">▸ Annotated Output Feed</div>
             ''')
 
-            # ── ROW 1: Live tracking preview (shown while processing) ──
+            # Live tracking preview (shown while processing)
             live_frame = gr.Image(
                 label="",
-                show_label=False,
+                show_label=True,
                 interactive=False,
                 height=360,
                 elem_id="live-feed",
                 visible=True,
             )
 
-            # Final annotated video (shown after processing completes)
+            # Final annotated video — hidden until processing done
             video_output = gr.Video(
-                label="",
-                show_label=False,
+                label="▶ Annotated Output — playable & downloadable",
+                show_label=True,
                 interactive=False,
                 height=360,
                 visible=False,
+                value=None,
+                include_audio=False,
             )
 
             gr.HTML('<div class="section-label" style="margin-top:1rem">▸ Threat Assessment</div>')
