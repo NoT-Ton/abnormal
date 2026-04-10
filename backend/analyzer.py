@@ -16,6 +16,24 @@ from utils.tracker import PersonTracker
 from utils.video_writer import AnnotatedVideoWriter
 
 
+def _snapshot_label(ev: dict) -> str:
+    """Short caption string for a snapshot, used as Gallery label."""
+    ts  = ev.get("timestamp", 0)
+    mm, ss = int(ts // 60), int(ts % 60)
+    t   = ev.get("type", "unknown")
+    conf = int(ev.get("confidence", 0) * 100)
+    if t == "panic":
+        r = ev.get("runners_count", "?")
+        n = ev.get("total_persons", "?")
+        return f"🚨 PANIC {mm:02d}:{ss:02d} | {r}/{n} running | {conf}%"
+    elif t == "loitering":
+        pid = ev.get("person_id", "?")
+        dur = ev.get("duration_seconds", 0)
+        return f"⚠ LOITER {mm:02d}:{ss:02d} | #{pid} | {dur:.0f}s | {conf}%"
+    else:
+        return f"⚠ CROWD {mm:02d}:{ss:02d} | {conf}%"
+
+
 class AbnormalBehaviorAnalyzer:
     """
     Main analyzer that processes video and detects:
@@ -40,6 +58,7 @@ class AbnormalBehaviorAnalyzer:
         self.crowd_detector = CrowdDetector()
         self.person_trails: dict = {}
         self.TRAIL_LEN = 20
+        self.snapshots: list = []  # all captured snapshots, never deduped
 
     def _default_config(self) -> dict:
         return {
@@ -173,12 +192,20 @@ class AbnormalBehaviorAnalyzer:
             annotated = self._annotate_frame(frame, detections, all_frame_events, timestamp)
             writer.write_frame(annotated)
 
+            # Capture snapshot for each new abnormal event — stored independently
+            for ev in all_frame_events:
+                snap = self._make_snapshot(annotated, ev, timestamp)
+                label = _snapshot_label(ev)
+                self.snapshots.append((snap, label))
+
             # Yield live preview frame + any new events detected this batch
             if frame_idx % preview_every == 0:
                 pct = min(frame_idx / max(total_frames, 1), 0.99)
                 rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
                 # Dedup events accumulated so far for live display
                 live_report = self._build_report(events, frame_idx / fps, fps, frame_idx)
+                # Pass all snapshots captured so far (never deduped)
+                live_report["_snapshots"] = list(self.snapshots)
                 yield rgb, pct, live_report
 
         cap.release()
@@ -189,6 +216,7 @@ class AbnormalBehaviorAnalyzer:
 
         report = self._build_report(events, duration_sec, fps, total_frames)
         report["_output_video_path"] = browser_path
+        report["_snapshots"] = list(self.snapshots)
         yield None, 1.0, report
 
     def _annotate_frame(self, frame, detections, events, timestamp):
@@ -286,6 +314,48 @@ class AbnormalBehaviorAnalyzer:
 
         return annotated
 
+    def _make_snapshot(self, annotated_bgr, event: dict, timestamp: float):
+        """
+        Render a labeled snapshot card for a detected event.
+        Returns an RGB numpy array ready for display.
+        """
+        import cv2
+        import numpy as np
+
+        snap = annotated_bgr.copy()
+        h, w = snap.shape[:2]
+
+        ev_type = event.get("type", "unknown")
+        if ev_type == "panic":
+            label   = "PANIC / RUNNING"
+            color   = (0, 0, 220)
+            bg      = (180, 0, 0)
+        elif ev_type == "loitering":
+            label   = f"LOITERING  Person #{event.get('person_id', '?')}"
+            color   = (0, 130, 255)
+            bg      = (0, 80, 160)
+        else:
+            label   = "CROWD ANOMALY"
+            color   = (0, 160, 255)
+            bg      = (0, 80, 130)
+
+        ts_str  = f"{int(timestamp//60):02d}:{int(timestamp%60):02d}"
+        conf    = int(event.get("confidence", 0) * 100)
+        caption = f"  {label}  |  {ts_str}  |  Conf: {conf}%  "
+
+        # Draw thick colored border
+        border = 6
+        cv2.rectangle(snap, (0, 0), (w-1, h-1), color[::-1], border * 2)
+
+        # Draw caption bar at bottom
+        bar_h = 36
+        cv2.rectangle(snap, (0, h - bar_h), (w, h), bg[::-1], -1)
+        cv2.putText(snap, caption, (10, h - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+
+        # Convert BGR → RGB for Gradio
+        return cv2.cvtColor(snap, cv2.COLOR_BGR2RGB)
+
     def _build_report(self, events, duration_sec, fps, total_frames) -> dict:
         loitering = [e for e in events if e["type"] == "loitering"]
         panic = [e for e in events if e["type"] == "panic"]
@@ -293,8 +363,8 @@ class AbnormalBehaviorAnalyzer:
 
         # Deduplicate by person/time window
         unique_loitering = self._dedup_events(loitering, key="person_id", window_sec=30)
-        unique_panic = self._dedup_events(panic, key="type", window_sec=10)
-        unique_crowd = self._dedup_events(crowd, key="type", window_sec=15)
+        unique_panic = self._dedup_events(panic, key="type", window_sec=1) 
+        unique_crowd = self._dedup_events(crowd, key="type", window_sec=10)
 
         severity = "NORMAL"
         if unique_panic:
@@ -302,15 +372,20 @@ class AbnormalBehaviorAnalyzer:
         elif unique_loitering:
             severity = "WARNING"
 
+        # Count from self.snapshots — reflects every captured event, never deduped
+        snap_loiter = sum(1 for _, lbl in self.snapshots if "LOITER" in lbl)
+        snap_panic  = sum(1 for _, lbl in self.snapshots if "PANIC"  in lbl)
+        snap_crowd  = sum(1 for _, lbl in self.snapshots if "CROWD"  in lbl)
+
         return {
             "severity": severity,
             "duration_seconds": round(duration_sec, 1),
             "total_frames": total_frames,
             "fps": round(fps, 1),
             "summary": {
-                "loitering_incidents": len(unique_loitering),
-                "panic_incidents": len(unique_panic),
-                "crowd_anomalies": len(unique_crowd),
+                "loitering_incidents": snap_loiter if snap_loiter else len(unique_loitering),
+                "panic_incidents":     snap_panic  if snap_panic  else len(unique_panic),
+                "crowd_anomalies":     snap_crowd  if snap_crowd  else len(unique_crowd),
             },
             "events": {
                 "loitering": unique_loitering,

@@ -190,6 +190,35 @@ video { border: 1px solid var(--border) !important; border-radius: 2px !importan
 }
 
 label { color: var(--muted) !important; font-family: var(--mono) !important; font-size: 0.72rem !important; }
+
+/* Snapshot gallery */
+#snapshot-gallery {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 2px !important;
+    min-height: 200px !important;
+}
+#snapshot-gallery .grid-wrap {
+    gap: 8px !important;
+    padding: 8px !important;
+}
+#snapshot-gallery .thumbnail-item {
+    border: 1px solid var(--border) !important;
+    border-radius: 2px !important;
+    transition: border-color 0.2s;
+    background: #0a0e14 !important;
+    aspect-ratio: 16/9 !important;
+}
+#snapshot-gallery .thumbnail-item img {
+    object-fit: contain !important;
+    width: 100% !important;
+    height: 100% !important;
+    background: #0a0e14 !important;
+}
+#snapshot-gallery .thumbnail-item:hover {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 12px rgba(0,212,255,0.2) !important;
+}
 """
 
 
@@ -345,19 +374,19 @@ def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshol
         frame_rgb, pct, payload = result
 
         if frame_rgb is not None:
-            # ── Still processing: show live frame + live event feed ──
-            live_report = payload  # now a report dict from analyzer
-            summary = live_report.get("summary", {})
-            live_text = format_live_report(live_report, pct)
+            # ── Still processing: show live frame + live snapshots ──
+            live_report = payload
+            summary     = live_report.get("summary", {})
+            snapshots   = live_report.get("_snapshots", [])
 
             yield (
-                gr.update(value=frame_rgb, visible=True),                    # live_frame
-                gr.update(value=None),                                        # video_output hidden
-                f"🟡 ANALYZING {int(pct*100)}%",                             # severity
-                str(summary.get("loitering_incidents", 0)),                  # loitering count
-                str(summary.get("panic_incidents", 0)),                      # panic count
-                str(summary.get("crowd_anomalies", 0)),                      # crowd count
-                live_text,                                                    # live alert feed
+                gr.update(value=frame_rgb, visible=True),       # live_frame
+                gr.update(value=None),                           # video_output hidden
+                f"🟡 ANALYZING {int(pct*100)}%",                # severity
+                str(summary.get("loitering_incidents", 0)),     # loitering count
+                str(summary.get("panic_incidents", 0)),         # panic count
+                str(summary.get("crowd_anomalies", 0)),         # crowd count
+                snapshots,                                       # gallery — grows in real-time
             )
         else:
             # ── Done: hide live frame, load final video ──
@@ -380,14 +409,16 @@ def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshol
                 final_video = os.path.join(ABDS_TMP, f"result_{run_id}.mp4")
                 shutil.copy2(raw_path, final_video)
 
+            final_snapshots = report.get("_snapshots", [])
+
             yield (
                 gr.update(value=None, visible=False),         # live_frame: hide
-                gr.update(value=final_video, visible=True),   # video_output: show with stable path
+                gr.update(value=final_video, visible=True),   # video_output: show
                 severity_display,
                 str(summary.get("loitering_incidents", 0)),
                 str(summary.get("panic_incidents", 0)),
                 str(summary.get("crowd_anomalies", 0)),
-                report_text,
+                final_snapshots,                              # final snapshot gallery
             )
 
 
@@ -513,21 +544,24 @@ with gr.Blocks(title="ABDS — Abnormal Behavior Detection") as demo:
                     elem_classes=["metric-card"],
                 )
 
-            gr.HTML('<div class="section-label" style="margin-top:1rem">▸ Analysis Report</div>')
-            report_out = gr.Textbox(
+            gr.HTML('<div class="section-label" style="margin-top:1rem">▸ Alert Snapshots — captured at moment of detection</div>')
+            snapshot_gallery = gr.Gallery(
                 label="",
-                lines=12,
-                max_lines=20,
-                interactive=False,
-                elem_id="report-output",
-                placeholder="Report will appear here after analysis...",
+                show_label=False,
+                elem_id="snapshot-gallery",
+                columns=2,
+                rows=2,
+                height="auto",
+                object_fit="contain",
+                preview=True,
+                allow_preview=True,
             )
 
     # Wire up
     analyze_btn.click(
         fn=run_analysis,
         inputs=[video_input, loitering_slider, speed_slider, conf_slider],
-        outputs=[live_frame, video_output, severity_out, loitering_out, panic_out, crowd_out, report_out],
+        outputs=[live_frame, video_output, severity_out, loitering_out, panic_out, crowd_out, snapshot_gallery],
     )
 
     gr.HTML("""
