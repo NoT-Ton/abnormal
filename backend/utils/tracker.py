@@ -33,10 +33,10 @@ class PersonTracker:
     def _load_model(self):
         try:
             from ultralytics import YOLO
-            # yolov8n.pt is ~6MB, downloads once automatically
+            # yolov8m.pt is ~44MB, downloads once automatically
             self.model = YOLO("yolov8m.pt")
             self.model.to("cpu")  # force CPU inference
-            print("[Tracker] YOLOv8n loaded OK (CPU mode)")
+            print("YOLOv8 loaded OK (CPU mode)")
         except Exception as e:
             print(f"[Tracker] YOLOv8 unavailable: {e} -- falling back to HOG detector")
             self.model = None

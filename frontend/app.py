@@ -340,6 +340,26 @@ def format_report(report: dict) -> str:
     return "\n".join(lines)
 
 
+def reset_ui():
+    """
+    Fires immediately when Analyze is clicked — before processing starts.
+    Resets all outputs to initial state:
+      - live_frame: visible (empty, ready to receive frames)
+      - video_output: hidden (clear previous result)
+      - metrics: cleared
+      - gallery: cleared
+    """
+    return (
+        gr.update(value=None, visible=True),    # live_frame: show empty
+        gr.update(value=None, visible=False),   # video_output: hide
+        "⏳ Starting...",                        # severity
+        "—",                                    # loitering
+        "—",                                    # panic
+        "—",                                    # crowd
+        [],                                     # gallery: clear
+    )
+
+
 def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshold):
     """
     Streaming generator.
@@ -380,13 +400,13 @@ def run_analysis(video_file, loitering_threshold, speed_threshold, conf_threshol
             snapshots   = live_report.get("_snapshots", [])
 
             yield (
-                gr.update(value=frame_rgb, visible=True),       # live_frame
-                gr.update(value=None),                           # video_output hidden
-                f"🟡 ANALYZING {int(pct*100)}%",                # severity
-                str(summary.get("loitering_incidents", 0)),     # loitering count
-                str(summary.get("panic_incidents", 0)),         # panic count
-                str(summary.get("crowd_anomalies", 0)),         # crowd count
-                snapshots,                                       # gallery — grows in real-time
+                gr.update(value=frame_rgb, visible=True),        # live_frame: show
+                gr.update(value=None, visible=False),            # video_output: hidden during processing
+                f"🟡 ANALYZING {int(pct*100)}%",                 # severity
+                str(summary.get("loitering_incidents", 0)),      # loitering count
+                str(summary.get("panic_incidents", 0)),          # panic count
+                str(summary.get("crowd_anomalies", 0)),          # crowd count
+                snapshots,                                        # gallery — grows in real-time
             )
         else:
             # ── Done: hide live frame, load final video ──
@@ -557,11 +577,19 @@ with gr.Blocks(title="ABDS — Abnormal Behavior Detection") as demo:
                 allow_preview=True,
             )
 
-    # Wire up
+    # Wire up — two-step:
+    # 1. reset_ui fires instantly on click (clears previous state)
+    # 2. run_analysis streams frames and results
+    OUTPUTS = [live_frame, video_output, severity_out, loitering_out, panic_out, crowd_out, snapshot_gallery]
+
     analyze_btn.click(
+        fn=reset_ui,
+        inputs=[],
+        outputs=OUTPUTS,
+    ).then(
         fn=run_analysis,
         inputs=[video_input, loitering_slider, speed_slider, conf_slider],
-        outputs=[live_frame, video_output, severity_out, loitering_out, panic_out, crowd_out, snapshot_gallery],
+        outputs=OUTPUTS,
     )
 
     gr.HTML("""
